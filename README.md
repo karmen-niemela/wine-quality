@@ -28,3 +28,8 @@ The dataset is available on [Kaggle](https://www.kaggle.com/datasets/uciml/red-w
 
 ### Output variable (based on sensory data):  
 * Quality (score between 0 and 10)
+
+## Requirements
+
+This repository uses **Python 3.13.5**. Set up a virtual environment with an
+appropriate python version and install the libraries from `requirements.txt`.
