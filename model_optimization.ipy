@@ -1,0 +1,223 @@
+""" Feature Selection for Wine Quality Regression
+
+This notebook finds a high performing set of features to predict red wine quality.
+
+The following steps are taken:
+    * Split the data into train and test sets
+    * Take all interactions between features plus original variables
+    * Use feature selection library to eliminate duplicates and highly correlated features
+    * Find high performing hyperparameters for XGBoost using scikit-optimize
+    ** During optimization, identify the best target metric and sample weighting strategy
+    * Use feature selection library to select the best features based on the XGBoost model
+    * Run a final XGBoost model on the selected features
+    * Evaluate the model on the test set
+"""
+#%%
+import os
+from itertools import combinations, product  # for creating interaction terms, nested for loop
+
+# for visualization and analysis
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+from feature_engine.selection import DropConstantFeatures, DropCorrelatedFeatures  # for dropping redundant features
+
+from mlxtend.feature_selection import SequentialFeatureSelector as SFS  # for feature selection
+
+#from sklearn.feature_selection import SequentialFeatureSelector as SFS
+from sklearn.model_selection import train_test_split, cross_val_score, KFold  # for splitting the data into train and test sets
+from sklearn.ensemble import GradientBoostingRegressor  # for the final model
+from sklearn.metrics import accuracy_score, confusion_matrix, r2_score, mean_absolute_error, mean_squared_error  # for evaluating the model
+
+# skopt for hyperparameter optimization
+from skopt import dummy_minimize
+from skopt.plots import plot_convergence
+from skopt.space import Real, Integer, Categorical
+from skopt.utils import use_named_args
+
+#%% Define input/output directories
+PERFORMANCE_DIR = './results/performance'
+if not os.path.exists(PERFORMANCE_DIR):
+    os.makedirs(PERFORMANCE_DIR)
+
+#%% Load raw data
+df_raw = pd.read_csv('./winequality-red.csv')
+
+#%% Prepare data and create interaction terms
+df = df_raw.copy()
+
+df.columns = ['_'.join(c.split()) for c in df.columns]
+
+# include all features in interaction terms since all are nonnull, continuous numeric
+feature_cols = [c for c in df.columns if c not in ('quality')]
+
+# loop over non-repeated combinations of 2 features to get product
+for feat1, feat2 in combinations(feature_cols, 2):
+
+    interaction_name = '|'.join([feat1, feat2])
+    df[interaction_name] = df[feat1] * df[feat2]
+
+#%% split into train and test before feature selection for fair evaluation
+X_train, X_test, y_train, y_test = train_test_split(
+    df.drop(labels=['quality'], axis=1),
+    df['quality'],
+    test_size=0.2
+)
+
+#%% ---------------------- Statistical Feature Elimination ---------------------
+
+# Check for quasi-constant features - all features found to have a decent amount of variation
+sel_const = DropConstantFeatures(tol=.98)
+sel_const.fit(X_train)
+
+print(sel_const.features_to_drop_)
+
+# Check for highly correlated groups of features - also none
+X_train_for_corr = X_train[[c for c in X_train.columns if '|' not in c]]
+
+sel_corr = DropCorrelatedFeatures(
+    threshold=0.8,
+    method='pearson'
+)
+sel_corr.fit(X_train_for_corr)
+
+print(sel_corr.correlated_feature_sets_)
+
+
+
+#%% ------------------------ Hyperparameter Optimization -----------------------
+""" Apply random search to find the best hyperparameters for the gradient boosting model.
+
+During optimization, identify the best target metric and sample weighting strategy.
+
+Target metrics: R2 score, MAE, RMSE
+Sample weighting strategies: Inverse occurrence of target classes, double for low-occurrence
+    classes, 10x for low-occurrrence classes, no weighting
+"""
+#%% Weighting functions
+# functions to give greater weight to rare target classes - needs to be dynamic so
+# cross-validation routine reflects the real application scenario
+def sample_weights_manual(y, low_occurrence_multiplier=2.0):
+    """Higher weight for quality below 5 or above 6 to balance impact."""
+    y = np.asarray(y)
+    return np.where((y < 5) | (y > 6), low_occurrence_multiplier, 1.0)
+
+def sample_weights_inverse_occurrence(y):
+    """Inverse occurrence of target classes."""
+    counts = np.bincount(y)
+    labeled_counts = np.arange(len(counts))[counts > 0]
+
+    weight_lookup = {label: 1.0 / count for label, count in zip(labeled_counts, counts[labeled_counts])}
+    return np.array([weight_lookup[label] for label in y])
+
+#%% Evaluation functions
+def calculate_accuracy(y_true, y_pred, tolerance=1):
+    """Calculate accuracy with a given tolerance to the target class - inspiration from data source paper"""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    return np.mean(np.abs(y_true - y_pred) <= tolerance)
+
+def plot_confusion_matrix(y_true, y_pred, title, save_path):
+    cm = confusion_matrix(y_true, y_pred)
+    __, ax = plt.subplots(figsize=(6.5, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cbar=False, ax=ax)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Actual')
+    ax.set_title(title)
+    plt.savefig(save_path)
+    plt.close()
+
+#%% Helper functions
+def save_results(results, save_path):
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    results_df.index.name = 'experiment'
+    results_df.to_csv(save_path, index=True)
+
+#%% Optimization routine
+target_metrics = {
+    'r2': r2_score,
+    'mae': mean_absolute_error,
+    'rmse': mean_squared_error,
+}
+
+sample_weighting_strategies = {
+    'double-for-low-occurrence': lambda y: sample_weights_manual(y, low_occurrence_multiplier=2.0),
+    '10x-for-low-occurrence': lambda y: sample_weights_manual(y, low_occurrence_multiplier=10.0),
+    'inverse-occurrence': sample_weights_inverse_occurrence,
+}
+
+# define parameter space for randomized search
+param_grid = [
+    Integer(10, 120, name="n_estimators"),
+    Real(0.01, 0.999, name="min_samples_split"),
+    Integer(1, 8, name="max_depth"),
+]
+
+
+def make_objective(X, y, dimensions, target_metric, sample_weighting_strategy):
+    """Build objective with X, y in closure"""
+    cv = KFold(n_splits=3, shuffle=True, random_state=42)
+
+    @use_named_args(dimensions)
+    def objective(**params):
+        est = GradientBoostingRegressor(**params)
+        scores = []
+        for train_idx, test_idx in cv.split(X, y):
+            X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
+            X_te, y_te = X.iloc[test_idx], y.iloc[test_idx]
+            sw_tr = sample_weighting_strategy(y_tr)
+            est.fit(X_tr, y_tr, sample_weight=sw_tr)
+            scores.append(target_metric(y_te, est.predict(X_te)))
+        return -np.mean(scores)
+    return objective
+
+
+#%% run randomized search and record results
+results = {}
+
+experimental_combos = list(product(target_metrics.items(), sample_weighting_strategies.items()))
+
+for (target_metric_name, target_metric), (sample_weighting_strategy_name, sample_weighting_strategy) in experimental_combos:
+
+    print(f"Target metric: {target_metric_name}, Sample weighting strategy: {sample_weighting_strategy_name}")
+    objective = make_objective(X_train, y_train, param_grid, target_metric, sample_weighting_strategy)
+    # n_calls set to 50 because observed that performance plateaus after 50 calls
+    result = dummy_minimize(objective, param_grid, n_calls=50)
+
+    best_params = {
+        'n_estimators': result.x[0],
+        'min_samples_split': result.x[1],
+        'max_depth': result.x[2],
+    }
+
+    # save the convergence plot
+    plot_convergence(result)
+    plt.savefig(os.path.join(PERFORMANCE_DIR, f"convergence_{target_metric_name}_{sample_weighting_strategy_name}.png"))
+    plt.close()
+
+    gbm = GradientBoostingRegressor(**best_params)
+
+    # evaluate the best model on the test set
+    gbm.fit(X_train, y_train, sample_weight=sample_weighting_strategy(y_train))
+    y_pred = gbm.predict(X_test)
+    performance = {
+        'r2': r2_score(y_test, y_pred),
+        'mae': mean_absolute_error(y_test, y_pred),
+        'rmse': mean_squared_error(y_test, y_pred),
+        'training_score': result.fun,
+    }
+    for tolerance in [0.5, 1]:
+        performance[f"accuracy_{tolerance}"] = calculate_accuracy(y_test, y_pred, tolerance)
+
+    results[f"{target_metric_name}|{sample_weighting_strategy_name}"] = {
+        **best_params,
+        **performance,
+    }
+
+    y_pred_rounded = np.round(y_pred)
+    plot_confusion_matrix(y_test, y_pred_rounded, f"Confusion Matrix for {target_metric_name}|{sample_weighting_strategy_name}", os.path.join(PERFORMANCE_DIR, f"confusion_matrix_{target_metric_name}_{sample_weighting_strategy_name}.png"))
+
+# convert results to dataframe and save to csv 
+save_results(results, os.path.join(PERFORMANCE_DIR, f"model_optimization_results.csv"))
