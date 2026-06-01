@@ -1,5 +1,6 @@
 # Red Wine Quality Analysis
 
+See the [GitHub website](https://karmen-niemela.github.io/wine-quality/) for rendered Jupyter notebook analyses.
 
 This repository analyzes the relationships between wine properties and quality ratings. The goal of the analysis is to answer:
 1. Which of the measured properties relate most strongly to the quality rating? Which of the measured properties do not relate to the quality rating?
