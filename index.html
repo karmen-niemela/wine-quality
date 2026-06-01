@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Red Wine Quality Analysis</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 800px;
+      margin: 48px auto;
+      padding: 0 24px;
+      color: #1a1a1a;
+      line-height: 1.6;
+    }
+    h1 { font-size: 2rem; margin-bottom: 0.25em; }
+    h2 { font-size: 1.2rem; margin-top: 2em; color: #444; }
+    .subtitle { color: #666; margin-top: 0; }
+    ul { padding-left: 1.4em; }
+    .reports {
+      display: flex;
+      gap: 16px;
+      margin-top: 2em;
+      flex-wrap: wrap;
+    }
+    .report-card {
+      flex: 1;
+      min-width: 220px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px 24px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .report-card:hover {
+      border-color: #7b1f2e;
+      box-shadow: 0 2px 8px rgba(123,31,46,0.12);
+    }
+    .report-card h3 {
+      margin: 0 0 0.4em;
+      color: #7b1f2e;
+      font-size: 1.05rem;
+    }
+    .report-card p { margin: 0; font-size: 0.9rem; color: #555; }
+    a { color: #7b1f2e; }
+    footer { margin-top: 3em; font-size: 0.85rem; color: #888; border-top: 1px solid #eee; padding-top: 1em; }
+  </style>
+</head>
+<body>
+  <h1>Red Wine Quality Analysis</h1>
+  <p class="subtitle">Physicochemical properties of <em>vinho verde</em> and perceived quality</p>
+
+  <p>
+    This project investigates the relationships between measurable wine properties and
+    quality ratings across 1,599 red <em>vinho verde</em> wines from Portugal. The
+    analysis aims to answer two questions:
+  </p>
+  <ol>
+    <li>Which physicochemical properties relate most strongly to quality — and which do not?</li>
+    <li>What properties would you recommend testing next to increase the quality rating?</li>
+  </ol>
+
+  <h2>Dataset</h2>
+  <p>
+    Each wine is described by 11 physicochemical input variables (fixed acidity, volatile
+    acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur
+    dioxide, density, pH, sulphates, alcohol) and one output variable: quality, a
+    subjective score from 0–10 calculated as the median rating of three taste testers.
+  </p>
+  <p>
+    Source: P. Cortez et al., <em>Modeling wine preferences by data mining from
+    physicochemical properties</em>, Decision Support Systems, Elsevier, 47(4):547–553, 2009.
+    Dataset available on <a href="https://www.kaggle.com/datasets/uciml/red-wine-quality-cortez-et-al-2009" target="_blank" rel="noopener">Kaggle</a>.
+  </p>
+
+  <h2>Analysis notebooks</h2>
+  <div class="reports">
+    <a class="report-card" href="eda.html">
+      <h3>Exploratory Data Analysis</h3>
+      <p>Distributions, correlations, and outlier findings across all physicochemical features.</p>
+    </a>
+    <a class="report-card" href="dimensionality_reduction.html">
+      <h3>Dimensionality Reduction</h3>
+      <p>PCA and related techniques to understand structure and feature relationships in the data.</p>
+    </a>
+  </div>
+
+  <footer>
+    Data: UCI ML Repository &mdash; Red Wine Quality &bull; Cortez et al. 2009
+  </footer>
+</body>
+</html>
