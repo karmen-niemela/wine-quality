@@ -1,20 +1,17 @@
 """ Feature Selection for Wine Quality Regression
 
-This notebook finds a high performing set of features to predict red wine quality.
+This notebook finds high performing hyperparameters for the gradient boosting model,
+along the way outputing evaluations of the target metric and sample weighting strategy.
 
 The following steps are taken:
-    * Split the data into train and test sets
-    * Take all interactions between features plus original variables
-    * Use feature selection library to eliminate duplicates and highly correlated features
     * Find high performing hyperparameters for XGBoost using scikit-optimize
     ** During optimization, identify the best target metric and sample weighting strategy
-    * Use feature selection library to select the best features based on the XGBoost model
-    * Run a final XGBoost model on the selected features
     * Evaluate the model on the test set
+
 """
 #%%
 import os
-from itertools import combinations, product  # for creating interaction terms, nested for loop
+from itertools import product  # for nested for loop of test conditions
 
 # for visualization and analysis
 import numpy as np
@@ -22,69 +19,35 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from feature_engine.selection import DropConstantFeatures, DropCorrelatedFeatures  # for dropping redundant features
 
-from mlxtend.feature_selection import SequentialFeatureSelector as SFS  # for feature selection
-
-#from sklearn.feature_selection import SequentialFeatureSelector as SFS
-from sklearn.model_selection import train_test_split, cross_val_score, KFold  # for splitting the data into train and test sets
+from sklearn.model_selection import KFold  # for splitting the data into train and test sets
 from sklearn.ensemble import GradientBoostingRegressor  # for the final model
-from sklearn.metrics import accuracy_score, confusion_matrix, r2_score, mean_absolute_error, mean_squared_error  # for evaluating the model
+from sklearn.metrics import confusion_matrix, r2_score, mean_absolute_error, mean_squared_error  # for evaluating the model
 
 # skopt for hyperparameter optimization
 from skopt import dummy_minimize
 from skopt.plots import plot_convergence
-from skopt.space import Real, Integer, Categorical
+from skopt.space import Real, Integer
 from skopt.utils import use_named_args
 
-#%% Define input/output directories
+from config_loader import PROJECT_ROOT
+
+#%% Define input/output directories and files
 PERFORMANCE_DIR = './results/performance'
 if not os.path.exists(PERFORMANCE_DIR):
     os.makedirs(PERFORMANCE_DIR)
 
-#%% Load raw data
-df_raw = pd.read_csv('./winequality-red.csv')
+PROCESSED_DATA_FILE = PROJECT_ROOT / 'data' / 'processed' / 'winequality-red-processed.csv'
 
-#%% Prepare data and create interaction terms
-df = df_raw.copy()
+#%% Load data
+df = pd.read_csv(PROCESSED_DATA_FILE)
 
-df.columns = ['_'.join(c.split()) for c in df.columns]
-
-# include all features in interaction terms since all are nonnull, continuous numeric
-feature_cols = [c for c in df.columns if c not in ('quality')]
-
-# loop over non-repeated combinations of 2 features to get product
-for feat1, feat2 in combinations(feature_cols, 2):
-
-    interaction_name = '|'.join([feat1, feat2])
-    df[interaction_name] = df[feat1] * df[feat2]
-
-#%% split into train and test before feature selection for fair evaluation
-X_train, X_test, y_train, y_test = train_test_split(
-    df.drop(labels=['quality'], axis=1),
-    df['quality'],
-    test_size=0.2
-)
-
-#%% ---------------------- Statistical Feature Elimination ---------------------
-
-# Check for quasi-constant features - all features found to have a decent amount of variation
-sel_const = DropConstantFeatures(tol=.98)
-sel_const.fit(X_train)
-
-print(sel_const.features_to_drop_)
-
-# Check for highly correlated groups of features - also none
-X_train_for_corr = X_train[[c for c in X_train.columns if '|' not in c]]
-
-sel_corr = DropCorrelatedFeatures(
-    threshold=0.8,
-    method='pearson'
-)
-sel_corr.fit(X_train_for_corr)
-
-print(sel_corr.correlated_feature_sets_)
-
+#%% Split into train and test before feature selection for fair evaluation
+# Use split already made in preprocess.py
+X_train = df[df['test_set'] == False].drop(labels=['quality', 'quality_category', 'test_set'], axis=1)
+y_train = df[df['test_set'] == False]['quality']
+X_test = df[df['test_set'] == True].drop(labels=['quality', 'quality_category', 'test_set'], axis=1)
+y_test = df[df['test_set'] == True]['quality']
 
 
 #%% ------------------------ Hyperparameter Optimization -----------------------
@@ -143,6 +106,7 @@ target_metrics = {
 }
 
 sample_weighting_strategies = {
+    'no-weighting': lambda y: np.ones(len(y)),
     'double-for-low-occurrence': lambda y: sample_weights_manual(y, low_occurrence_multiplier=2.0),
     '10x-for-low-occurrence': lambda y: sample_weights_manual(y, low_occurrence_multiplier=10.0),
     'inverse-occurrence': sample_weights_inverse_occurrence,
@@ -170,11 +134,11 @@ def make_objective(X, y, dimensions, target_metric, sample_weighting_strategy):
             sw_tr = sample_weighting_strategy(y_tr)
             est.fit(X_tr, y_tr, sample_weight=sw_tr)
             scores.append(target_metric(y_te, est.predict(X_te)))
-        return -np.mean(scores)
+        return -np.mean(scores) # negative because we want to maximize the target metric
     return objective
 
 
-#%% run randomized search and record results
+#%% Run randomized search and record results
 results = {}
 
 experimental_combos = list(product(target_metrics.items(), sample_weighting_strategies.items()))
@@ -192,14 +156,14 @@ for (target_metric_name, target_metric), (sample_weighting_strategy_name, sample
         'max_depth': result.x[2],
     }
 
-    # save the convergence plot
+    # Save the convergence plot
     plot_convergence(result)
     plt.savefig(os.path.join(PERFORMANCE_DIR, f"convergence_{target_metric_name}_{sample_weighting_strategy_name}.png"))
     plt.close()
 
     gbm = GradientBoostingRegressor(**best_params)
 
-    # evaluate the best model on the test set
+    # evaluate the best model on the held-out test set
     gbm.fit(X_train, y_train, sample_weight=sample_weighting_strategy(y_train))
     y_pred = gbm.predict(X_test)
     performance = {
@@ -210,6 +174,9 @@ for (target_metric_name, target_metric), (sample_weighting_strategy_name, sample
     }
     for tolerance in [0.5, 1]:
         performance[f"accuracy_{tolerance}"] = calculate_accuracy(y_test, y_pred, tolerance)
+    
+    # Limit performance results to 2 decimal places
+    performance = {k: round(v, 2) for k, v in performance.items()}
 
     results[f"{target_metric_name}|{sample_weighting_strategy_name}"] = {
         **best_params,
@@ -219,5 +186,7 @@ for (target_metric_name, target_metric), (sample_weighting_strategy_name, sample
     y_pred_rounded = np.round(y_pred)
     plot_confusion_matrix(y_test, y_pred_rounded, f"Confusion Matrix for {target_metric_name}|{sample_weighting_strategy_name}", os.path.join(PERFORMANCE_DIR, f"confusion_matrix_{target_metric_name}_{sample_weighting_strategy_name}.png"))
 
-# convert results to dataframe and save to csv 
+# Convert performance results to dataframe and save to csv 
 save_results(results, os.path.join(PERFORMANCE_DIR, f"model_optimization_results.csv"))
+
+# %%
