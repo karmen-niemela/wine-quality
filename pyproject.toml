@@ -122,3 +122,14 @@ dependencies = [
     "websocket-client==1.8.0",
     "widgetsnbextension==4.0.14",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.16",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
